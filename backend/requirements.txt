@@ -1,0 +1,22 @@
+# Backend dependencies (declared only — NOT installed during scaffolding).
+# Web framework + server
+fastapi
+uvicorn[standard]
+
+# Document parsers (PDF, DOCX, PPTX)
+pypdf
+python-docx
+python-pptx
+
+# Embeddings + vector DB
+sentence-transformers
+qdrant-client
+
+# Database
+sqlalchemy
+psycopg2-binary
+
+# Config / validation
+pydantic-settings
+
+# TODO: add auth libs (python-jose, passlib) and LLM provider SDK when implementing.

@@ -1,0 +1,44 @@
+# Full-stack local orchestration for the Enterprise RAG Knowledge Assistant.
+# NOTE: scaffolding only — do NOT `docker compose up/build` during scaffolding.
+# MEMORY.md checklist:
+# - [ ] `docker compose up` brings up full stack (api, db, vector store, frontend)
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: rag
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  backend:
+    build: ./backend
+    env_file:
+      - ./backend/.env.example  # TODO: point to a real ./backend/.env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - qdrant
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "4200:80"
+    depends_on:
+      - backend
+
+volumes:
+  db_data:
+  qdrant_data:
