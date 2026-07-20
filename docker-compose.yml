@@ -1,7 +1,17 @@
 # Full-stack local orchestration for the Enterprise RAG Knowledge Assistant.
-# NOTE: scaffolding only — do NOT `docker compose up/build` during scaffolding.
-# MEMORY.md checklist:
-# - [ ] `docker compose up` brings up full stack (api, db, vector store, frontend)
+#
+# Brings up the whole system with a single command:
+#   docker compose up --build
+#
+# Services:
+#   db       - PostgreSQL for users, documents, collections, chunks, query logs
+#   backend  - FastAPI API (ingestion + retrieval + cited answers)
+#   frontend - Angular app served by nginx, proxying /api to the backend
+#
+# The vector index is an in-process NumPy cosine store rebuilt from the persisted
+# chunk embeddings on startup, so no separate vector-DB service is required. The
+# default answer path is fully offline; set ANTHROPIC_API_KEY on the backend to
+# enable generated (non-extractive) answers.
 
 services:
   db:
@@ -14,23 +24,25 @@ services:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
-
-  qdrant:
-    image: qdrant/qdrant:latest
-    ports:
-      - "6333:6333"
-    volumes:
-      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   backend:
     build: ./backend
-    env_file:
-      - ./backend/.env.example  # TODO: point to a real ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/rag
+      JWT_SECRET: change-me-in-production
+      CORS_ORIGINS: http://localhost:4200
+      FIRST_ADMIN_EMAIL: admin@example.com
+      FIRST_ADMIN_PASSWORD: adminpass123
     ports:
       - "8000:8000"
     depends_on:
-      - db
-      - qdrant
+      db:
+        condition: service_healthy
 
   frontend:
     build: ./frontend
@@ -41,4 +53,3 @@ services:
 
 volumes:
   db_data:
-  qdrant_data:

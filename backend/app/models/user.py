@@ -1,14 +1,34 @@
-"""User ORM model (stub).
+"""User ORM model with a simple two-role RBAC scheme.
 
-MEMORY.md checklist:
-- [ ] Auth + user management (roles/permissions)
+Roles are stored as a short string on the user row (``admin`` / ``user``),
+which is the simplest design that fully supports the admin controls described
+in MEMORY.md without a separate roles table.
 """
 
-from app.models.base import Base
+import enum
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.models.base import Base, utcnow
+
+
+class Role(str, enum.Enum):
+    """Allowed roles. Inherits from str so it serialises cleanly to JSON."""
+
+    ADMIN = "admin"
+    USER = "user"
 
 
 class User(Base):
     __tablename__ = "users"
 
-    # TODO: id, email, hashed_password, role, created_at, is_active columns.
-    __table_args__ = {"extend_existing": True}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, default=Role.USER.value, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )

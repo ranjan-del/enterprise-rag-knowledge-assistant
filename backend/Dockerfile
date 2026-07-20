@@ -1,5 +1,4 @@
 # Backend image for the Enterprise RAG Knowledge Assistant (FastAPI).
-# NOTE: scaffolding only — image is not built during scaffolding.
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -13,5 +12,5 @@ COPY . .
 
 EXPOSE 8000
 
-# TODO: run DB migrations before starting in production.
+# Tables are created automatically on startup (see app.main.lifespan).
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

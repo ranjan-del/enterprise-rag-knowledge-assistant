@@ -1,15 +1,74 @@
 """Text chunking for the ingestion pipeline.
 
-MEMORY.md checklist:
-- [ ] Ingestion pipeline: parse -> chunk -> embed -> vector DB
+Splits parsed document text into overlapping, character-based windows and keeps
+the metadata (page, chunk index, character span) needed to cite each chunk back
+to its source. Text produced by the parsers may contain form-feed page markers
+(``\\f``); we split on those first so each chunk carries the correct page number.
+
+A fixed-size sliding window is the simplest strategy to reason about: the window
+advances by ``chunk_size - overlap`` characters so consecutive chunks share
+``overlap`` characters of context, keeping facts that straddle a boundary whole
+in at least one chunk.
 """
 
 from __future__ import annotations
 
+from app.ingest.parser import PAGE_BREAK
 
-def chunk_text(text: str, chunk_size: int = 800, overlap: int = 100) -> list[str]:
-    """Split text into overlapping chunks.
 
-    TODO: implement token-aware / sentence-aware chunking with overlap.
+def chunk_text(
+    text: str,
+    chunk_size: int = 800,
+    overlap: int = 100,
+) -> list[dict]:
+    """Split text into overlapping chunks with page + span metadata.
+
+    Args:
+        text: parsed plain text (may contain ``\\f`` page markers).
+        chunk_size: maximum characters per chunk (> 0).
+        overlap: characters shared between consecutive chunks
+            (``0 <= overlap < chunk_size``).
+
+    Returns:
+        A list of dicts, each shaped::
+
+            {
+                "text": str,
+                "page": int,          # 1-based
+                "chunk_index": int,   # global across the whole document
+                "char_start": int,    # offset within its page's text
+                "char_end": int,
+            }
     """
-    raise NotImplementedError
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if not (0 <= overlap < chunk_size):
+        raise ValueError("overlap must satisfy 0 <= overlap < chunk_size")
+
+    step = chunk_size - overlap
+    chunks: list[dict] = []
+    chunk_index = 0
+
+    pages = text.split(PAGE_BREAK) if PAGE_BREAK in text else [text]
+    for page_number, page_text in enumerate(pages, start=1):
+        start = 0
+        length = len(page_text)
+        while start < length:
+            end = min(start + chunk_size, length)
+            piece = page_text[start:end].strip()
+            if piece:
+                chunks.append(
+                    {
+                        "text": piece,
+                        "page": page_number,
+                        "chunk_index": chunk_index,
+                        "char_start": start,
+                        "char_end": end,
+                    }
+                )
+                chunk_index += 1
+            if end == length:
+                break
+            start += step
+
+    return chunks

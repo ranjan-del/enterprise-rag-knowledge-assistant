@@ -1,5 +1,54 @@
-<!-- TODO: collections grid + create/rename/delete actions. -->
-<section>
+<div class="page-head">
   <h1>Collections</h1>
-  <p><em>Coming soon</em></p>
-</section>
+  <p>Group related documents so you can scope search to a subset of the knowledge base.</p>
+</div>
+
+<div class="card create-box">
+  <h3>New collection</h3>
+  <form (ngSubmit)="create()" class="create-form">
+    <div class="field">
+      <label for="name">Name</label>
+      <input id="name" name="name" [(ngModel)]="name" placeholder="e.g. HR Policies" />
+    </div>
+    <div class="field">
+      <label for="description">Description</label>
+      <input
+        id="description"
+        name="description"
+        [(ngModel)]="description"
+        placeholder="Optional description"
+      />
+    </div>
+    <button class="btn btn-primary" type="submit" [disabled]="creating()">
+      @if (creating()) {<span class="spinner" aria-hidden="true"></span>} Create
+    </button>
+  </form>
+  @if (error()) {
+  <div class="alert alert-error" role="alert">{{ error() }}</div>
+  }
+</div>
+
+@if (loading()) {
+<div class="empty-state"><span class="spinner spinner-brand"></span></div>
+} @else if (!collections().length) {
+<div class="card empty-state">
+  <span class="emoji">◫</span>
+  <p>No collections yet. Create one above to organize your documents.</p>
+</div>
+} @else {
+<div class="grid">
+  @for (c of collections(); track c.id) {
+  <div class="card collection-card">
+    <div class="cc-head">
+      <span class="cc-icon" aria-hidden="true">◫</span>
+      <button class="btn btn-ghost btn-sm" (click)="remove(c)">Delete</button>
+    </div>
+    <h3>{{ c.name }}</h3>
+    <p class="muted desc">{{ c.description || 'No description' }}</p>
+    <div class="cc-foot">
+      <span class="badge badge-brand">{{ c.document_count }} documents</span>
+    </div>
+  </div>
+  }
+</div>
+}

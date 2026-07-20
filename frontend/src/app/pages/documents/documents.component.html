@@ -1,5 +1,101 @@
-<!-- TODO: drag-drop upload + documents table with ingestion status. -->
-<section>
+<div class="page-head">
   <h1>Documents</h1>
-  <p><em>Coming soon</em></p>
-</section>
+  <p>Upload PDF, DOCX, PPTX, TXT, or CSV files to index them for search.</p>
+</div>
+
+<div class="upload-row">
+  <div
+    class="dropzone card"
+    [class.dragging]="dragging()"
+    (drop)="onDrop($event)"
+    (dragover)="onDragOver($event)"
+    (dragleave)="onDragLeave()"
+  >
+    <input
+      #fileInput
+      type="file"
+      [accept]="accept"
+      multiple
+      hidden
+      (change)="onFileSelected($event)"
+    />
+    <span class="dz-icon" aria-hidden="true">⬆</span>
+    @if (uploading()) {
+    <p><span class="spinner spinner-brand"></span> Uploading &amp; indexing…</p>
+    } @else {
+    <p><strong>Drag &amp; drop files here</strong> or</p>
+    <button class="btn btn-primary" (click)="fileInput.click()">Choose files</button>
+    <p class="muted formats">PDF · DOCX · PPTX · TXT · CSV</p>
+    }
+  </div>
+
+  <div class="card upload-side">
+    <div class="field">
+      <label for="uploadCollection">Add to collection</label>
+      <select id="uploadCollection" [(ngModel)]="uploadCollection">
+        <option [ngValue]="null">No collection</option>
+        @for (c of collections(); track c.id) {
+        <option [ngValue]="c.id">{{ c.name }}</option>
+        }
+      </select>
+    </div>
+    <p class="muted small">
+      Files are parsed, chunked, embedded, and indexed automatically. Ingestion
+      runs offline with a deterministic embedder.
+    </p>
+  </div>
+</div>
+
+@if (error()) {
+<div class="alert alert-error" role="alert">{{ error() }}</div>
+}
+
+<div class="spread section-head">
+  <h3>All documents</h3>
+  <button class="btn btn-sm" (click)="refresh()">Refresh</button>
+</div>
+
+@if (loading()) {
+<div class="empty-state"><span class="spinner spinner-brand"></span></div>
+} @else if (!documents().length) {
+<div class="card empty-state">
+  <span class="emoji">▤</span>
+  <p>No documents yet. Upload a file above to get started.</p>
+</div>
+} @else {
+<div class="table-wrap">
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Type</th>
+        <th>Status</th>
+        <th>Chunks</th>
+        <th>Collection</th>
+        <th>Version</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      @for (doc of documents(); track doc.id) {
+      <tr>
+        <td class="name-cell">{{ doc.filename }}</td>
+        <td><span class="badge">{{ doc.format || '—' }}</span></td>
+        <td>
+          <span class="badge" [ngClass]="statusClass(doc.status)">{{ doc.status }}</span>
+          @if (doc.status === 'failed' && doc.error) {
+          <span class="muted err" [title]="doc.error">⚠</span>
+          }
+        </td>
+        <td>{{ doc.num_chunks }}</td>
+        <td>{{ collectionName(doc.collection_id) }}</td>
+        <td>v{{ doc.version }}</td>
+        <td class="actions">
+          <button class="btn btn-ghost btn-sm" (click)="remove(doc)">Delete</button>
+        </td>
+      </tr>
+      }
+    </tbody>
+  </table>
+</div>
+}

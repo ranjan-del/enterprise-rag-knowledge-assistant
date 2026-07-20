@@ -1,22 +1,65 @@
-"""Pydantic schemas for search + answers (stub).
+"""Pydantic schemas for search and cited answers.
 
 MEMORY.md checklist:
-- [ ] Answer generation with confidence, citations, highlighted text, source document
+- [x] Answer generation with confidence, citations, highlighted text, source document
 """
 
-from pydantic import BaseModel
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
 
 
 class SearchRequest(BaseModel):
+    query: str = Field(min_length=1)
+    top_k: int = Field(default=5, ge=1, le=50)
+    collection_id: int | None = None
+    document_id: int | None = None
+    mode: str = Field(default="semantic", pattern="^(semantic|hybrid)$")
+
+
+class SearchResultItem(BaseModel):
+    chunk_id: int | None = None
+    document_id: int | None = None
+    filename: str | None = None
+    page: int | None = None
+    chunk_index: int | None = None
+    score: float
+    text: str
+
+
+class SearchResults(BaseModel):
     query: str
-    # TODO: top_k, filters, collection_id, mode (semantic|hybrid).
+    mode: str
+    results: list[SearchResultItem]
 
 
 class Citation(BaseModel):
-    # TODO: document_id, chunk_id, snippet, page.
-    document_id: str
+    marker: str
+    chunk_id: int | None = None
+    document_id: int | None = None
+    filename: str | None = None
+    page: int | None = None
+    score: float
+    snippet: str
+
+
+class Highlight(BaseModel):
+    term: str
+    start: int
+    end: int
+
+
+class SourceDocument(BaseModel):
+    document_id: int | None = None
+    filename: str | None = None
+    page: int | None = None
+    collection_id: int | None = None
 
 
 class AnswerResponse(BaseModel):
+    question: str
     answer: str
-    # TODO: confidence: float, citations: list[Citation], highlights, source_document.
+    confidence: float
+    citations: list[Citation]
+    highlights: list[Highlight]
+    source_document: SourceDocument | None = None

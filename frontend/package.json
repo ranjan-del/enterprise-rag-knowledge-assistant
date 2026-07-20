@@ -1,7 +1,7 @@
 {
   "name": "enterprise-rag-knowledge-assistant-frontend",
-  "version": "0.1.0",
-  "description": "Angular frontend for the Enterprise RAG Knowledge Assistant (scaffold — deps declared, not installed).",
+  "version": "1.0.0",
+  "description": "Angular frontend for the Enterprise RAG Knowledge Assistant.",
   "scripts": {
     "ng": "ng",
     "start": "ng serve",

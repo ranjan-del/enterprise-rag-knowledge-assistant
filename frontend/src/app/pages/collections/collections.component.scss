@@ -1,0 +1,51 @@
+.create-box {
+  padding: 1.35rem;
+  margin-bottom: 1.5rem;
+}
+.create-box h3 {
+  font-size: 1.05rem;
+  margin-bottom: 1rem;
+}
+.create-form {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr auto;
+  gap: 0.85rem;
+  align-items: end;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1rem;
+}
+.collection-card {
+  padding: 1.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.cc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.cc-icon {
+  font-size: 1.4rem;
+  color: var(--brand);
+}
+.collection-card h3 {
+  font-size: 1.1rem;
+}
+.desc {
+  font-size: 0.9rem;
+  flex: 1;
+}
+.cc-foot {
+  margin-top: 0.35rem;
+}
+
+@media (max-width: 720px) {
+  .create-form {
+    grid-template-columns: 1fr;
+  }
+}

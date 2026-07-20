@@ -1,13 +1,20 @@
-"""SQLAlchemy declarative base.
+"""SQLAlchemy declarative base and shared helpers.
 
-MEMORY.md checklist:
-- [ ] Auth + user management (roles/permissions)
-- [ ] Admin: ... versioning, permissions
+Every ORM model inherits from ``Base``. ``utcnow`` is the single source of truth
+for timestamp defaults so all rows use timezone-aware UTC.
 """
+
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import DeclarativeBase
 
 
+def utcnow() -> datetime:
+    """Timezone-aware current UTC time (used as a column default)."""
+    return datetime.now(timezone.utc)
+
+
 class Base(DeclarativeBase):
-    """Base class for all ORM models. TODO: add shared columns/mixins."""
+    """Base class for all ORM models."""
+
     pass

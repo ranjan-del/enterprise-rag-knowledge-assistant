@@ -1,5 +1,69 @@
-<!-- TODO: users table (roles/permissions) + document versioning controls. -->
-<section>
+<div class="page-head">
   <h1>Admin</h1>
-  <p><em>Coming soon</em></p>
-</section>
+  <p>Manage users, roles, and access to the knowledge base.</p>
+</div>
+
+@if (error()) {
+<div class="alert alert-error" role="alert">{{ error() }}</div>
+}
+
+@if (loading()) {
+<div class="empty-state"><span class="spinner spinner-brand"></span></div>
+} @else {
+<div class="table-wrap">
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Email</th>
+        <th>Role</th>
+        <th>Status</th>
+        <th>Joined</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      @for (user of users(); track user.id) {
+      <tr>
+        <td class="email-cell">
+          {{ user.email }}
+          @if (user.id === auth.user()?.id) {
+          <span class="badge badge-brand you">you</span>
+          }
+        </td>
+        <td>
+          <span class="badge" [class.badge-brand]="user.role === 'admin'">
+            {{ user.role }}
+          </span>
+        </td>
+        <td>
+          <span
+            class="badge"
+            [class.badge-success]="user.is_active"
+            [class.badge-danger]="!user.is_active"
+          >
+            {{ user.is_active ? 'active' : 'disabled' }}
+          </span>
+        </td>
+        <td>{{ user.created_at | date: 'mediumDate' }}</td>
+        <td class="actions">
+          <button
+            class="btn btn-sm"
+            (click)="toggleRole(user)"
+            [disabled]="user.id === auth.user()?.id"
+          >
+            {{ user.role === 'admin' ? 'Make user' : 'Make admin' }}
+          </button>
+          <button
+            class="btn btn-sm"
+            (click)="toggleActive(user)"
+            [disabled]="user.id === auth.user()?.id"
+          >
+            {{ user.is_active ? 'Disable' : 'Enable' }}
+          </button>
+        </td>
+      </tr>
+      }
+    </tbody>
+  </table>
+</div>
+}

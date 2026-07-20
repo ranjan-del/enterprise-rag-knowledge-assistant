@@ -1,8 +1,8 @@
 # Enterprise RAG Knowledge Assistant
 
-An internal company knowledge system built on Retrieval-Augmented Generation (RAG). Upload documents, index them into a vector database, ask questions in natural language, and get answers with confidence scores, citations, highlighted supporting text, and links back to the source document. Multi-user, with collections and admin controls.
+An internal company knowledge system built on Retrieval-Augmented Generation (RAG). Upload documents, index them, ask questions in natural language, and get answers with confidence scores, citations, highlighted supporting text, and links back to the source document. Multi-user, with collections and admin controls.
 
-> Status: scaffold. This repository currently contains skeleton and boilerplate only. Feature logic is marked with `TODO` comments.
+> Status: working. The FastAPI backend and Angular frontend are fully implemented and run end to end. The default path is **offline-first**: a deterministic hashing embedder, an in-memory NumPy cosine vector store, and an extractive answer generator mean the whole system runs and its tests pass with **no API key and no external services**. Set `ANTHROPIC_API_KEY` to optionally enable generated (non-extractive) answers.
 
 ## Architecture
 
@@ -14,23 +14,24 @@ flowchart TD
     subgraph Ingestion
         UP[Upload] --> PARSE[Parser: PDF/DOCX/PPTX/TXT/CSV]
         PARSE --> CHUNK[Chunk]
-        CHUNK --> EMBED[Embedding]
-        EMBED --> VDB[(Vector DB / Qdrant)]
+        CHUNK --> EMBED[Hashing embedder]
+        EMBED --> VDB[(In-memory NumPy cosine store)]
     end
 
     subgraph Query
         Q[Question] --> RET[Retriever: semantic / metadata / hybrid]
         RET --> VDB
-        RET --> LLM[LLM]
-        LLM --> ANS[Answer + confidence + citations + highlights]
+        RET --> GEN[Extractive answer / optional Claude]
+        GEN --> ANS[Answer + confidence + citations + highlights]
     end
 
     BE --> UP
     BE --> Q
-    BE --> PG[(PostgreSQL: users, documents, collections)]
+    BE --> DB[(SQLite / PostgreSQL: users, documents, collections, chunks)]
+    VDB -. rebuilt on startup .-> DB
 ```
 
-Pipeline: Upload to Parser to Chunk to Embedding to Vector DB to Retriever to LLM to Answer.
+Pipeline: Upload to Parser to Chunk to Embedding to Vector store to Retriever to Answer. Chunk embeddings are persisted in the database, and the in-memory index is rebuilt from them on startup.
 
 ## Folder Structure
 
@@ -38,31 +39,39 @@ Pipeline: Upload to Parser to Chunk to Embedding to Vector DB to Retriever to LL
 enterprise-rag-knowledge-assistant/
 ├── backend/                  FastAPI backend
 │   ├── app/
-│   │   ├── main.py           App entrypoint + /health
-│   │   ├── core/config.py    Settings (pydantic-settings)
+│   │   ├── main.py           App entrypoint, CORS, startup (init DB, seed admin, warm index)
+│   │   ├── deps.py           Auth dependencies (current user, role guard)
+│   │   ├── core/             config (pydantic-settings), security (bcrypt + JWT)
 │   │   ├── api/routes/       auth, documents, search, collections, analytics, admin
-│   │   ├── ingest/           parser, chunk, embed
-│   │   ├── store/            vector_store (Qdrant)
-│   │   ├── retrieve/         retriever, hybrid
-│   │   ├── generate/         llm, answer (confidence/citation/highlight)
-│   │   ├── models/           SQLAlchemy models
+│   │   ├── ingest/           parser, chunk, embed, pipeline (parse->chunk->embed->index)
+│   │   ├── store/            vector_store (in-memory NumPy cosine store)
+│   │   ├── retrieve/         retriever (semantic), hybrid (lexical + semantic)
+│   │   ├── generate/         answer (confidence/citation/highlight), llm (offline + Claude)
+│   │   ├── models/           SQLAlchemy models (user, collection, document, chunk, query log)
 │   │   ├── schemas/          Pydantic schemas
 │   │   └── db/session.py     DB engine/session
+│   ├── tests/                pytest suite (offline ingest + query + API)
 │   ├── requirements.txt
 │   ├── Dockerfile
 │   └── .env.example
-├── frontend/                 Angular frontend
+├── frontend/                 Angular frontend (standalone components)
 │   ├── src/app/pages/        login, dashboard, documents, search, collections, analytics, admin
-│   ├── src/app/services/     API service wrappers
+│   ├── src/app/services/     typed API clients
+│   ├── src/app/interceptors/ auth token interceptor
+│   ├── src/app/guards/       auth + admin route guards
+│   ├── nginx.conf            serves the SPA and proxies /api to the backend
 │   ├── package.json
 │   ├── angular.json
 │   └── tsconfig.json
-├── docker-compose.yml        db, qdrant, backend, frontend
+├── .github/workflows/ci.yml  CI: backend pytest + frontend ng build
+├── docker-compose.yml        db (Postgres), backend, frontend
 ├── LICENSE
 └── README.md
 ```
 
 ## Installation Guide
+
+### Option A — Docker (full stack)
 
 Prerequisites: Docker and Docker Compose.
 
@@ -70,41 +79,57 @@ Prerequisites: Docker and Docker Compose.
 git clone https://github.com/ranjan-del/enterprise-rag-knowledge-assistant.git
 cd enterprise-rag-knowledge-assistant
 
-# Configure backend environment
-cp backend/.env.example backend/.env
-# edit backend/.env with your DB, Qdrant, and LLM settings
+# Bring up the full stack (Postgres, backend, frontend)
+docker compose up --build
+```
 
-# Bring up the full stack (db, qdrant, backend, frontend)
-docker compose up
+### Option B — Local development (offline, no Docker)
+
+Prerequisites: Python 3.11+ and Node 20+. No API key or database server needed.
+
+```bash
+# Backend (defaults to a local SQLite file + offline embedder)
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+pytest                                   # run the test suite
+uvicorn app.main:app --reload            # serve the API on :8000
+
+# Frontend (in another terminal)
+cd frontend
+npm install
+npm start                                # serve the app on :4200
 ```
 
 Services once running:
 
-| Service  | URL                     |
-| -------- | ----------------------- |
-| Frontend | http://localhost:4200   |
-| Backend  | http://localhost:8000   |
+| Service  | URL                        |
+| -------- | -------------------------- |
+| Frontend | http://localhost:4200      |
+| Backend  | http://localhost:8000      |
 | API docs | http://localhost:8000/docs |
-| Qdrant   | http://localhost:6333   |
-| Postgres | localhost:5432          |
+| Postgres | localhost:5432 (Docker)    |
+
+A bootstrap admin is seeded on first startup: `admin@example.com` / `adminpass123` (configurable via `FIRST_ADMIN_EMAIL` / `FIRST_ADMIN_PASSWORD`). New users can also self-register from the login screen.
 
 ## Features
 
 - Multi-format upload and parsing: PDF, DOCX, PPTX, TXT, CSV
-- Ingestion pipeline: parse, chunk, embed, store in vector DB
-- Search: semantic, metadata filter, and hybrid, organized into collections
-- Cited answers: answer text with confidence, citations, highlighted text, and source document
-- Dashboard: documents, users, search, analytics, collections
-- Admin: upload, delete, versioning, permissions
-- Auth and user management with roles and permissions
+- Ingestion pipeline: parse, chunk, embed, persist, and index (offline, deterministic)
+- Search: semantic, metadata filter, and hybrid (lexical + semantic fusion), scoped to collections
+- Cited answers: answer text with confidence, numbered citations, highlighted supporting text, and source document
+- Dashboard: documents, collections, indexed chunks, users, and query activity
+- Admin: user roles and activation, document versioning, admin-override delete
+- Auth and user management with JWT and two-role RBAC (admin / user)
+- Offline-first: runs and tests with no API key or external service; optional Claude backend for generated answers
 
 ## Screenshots
 
-_Coming soon_
+_Not captured (headless build environment). Run the app locally (see Installation) to view the login, dashboard, documents, and Ask pages._
 
 ## Demo GIF
 
-_Coming soon_
+_Not captured (headless build environment)._
 
 ## API Documentation
 

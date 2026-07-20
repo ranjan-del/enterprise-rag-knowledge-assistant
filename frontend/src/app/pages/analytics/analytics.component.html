@@ -1,5 +1,74 @@
-<!-- TODO: charts for usage/query volume over time. -->
-<section>
+<div class="page-head">
   <h1>Analytics</h1>
-  <p><em>Coming soon</em></p>
-</section>
+  <p>Usage of the knowledge base: content volume and query activity.</p>
+</div>
+
+@if (loading()) {
+<div class="empty-state"><span class="spinner spinner-brand"></span></div>
+} @else if (overview()) {
+<div class="metrics">
+  <div class="metric card">
+    <span class="m-label">Documents</span>
+    <span class="m-value">{{ overview()!.documents }}</span>
+  </div>
+  <div class="metric card">
+    <span class="m-label">Ready</span>
+    <span class="m-value">{{ overview()!.ready_documents }}</span>
+  </div>
+  <div class="metric card">
+    <span class="m-label">Collections</span>
+    <span class="m-value">{{ overview()!.collections }}</span>
+  </div>
+  <div class="metric card">
+    <span class="m-label">Indexed chunks</span>
+    <span class="m-value">{{ overview()!.chunks }}</span>
+  </div>
+  <div class="metric card">
+    <span class="m-label">Users</span>
+    <span class="m-value">{{ overview()!.users }}</span>
+  </div>
+  <div class="metric card">
+    <span class="m-label">Questions</span>
+    <span class="m-value">{{ overview()!.queries }}</span>
+  </div>
+</div>
+
+<div class="split">
+  <div class="card panel">
+    <h3>Most indexed documents</h3>
+    @if (usage()?.top_documents?.length) {
+    <div class="bars">
+      @for (d of usage()!.top_documents; track d.document_id) {
+      <div class="bar-row">
+        <span class="bar-label" [title]="d.filename">{{ d.filename }}</span>
+        <div class="bar-track">
+          <div class="bar-fill" [style.width]="barWidth(d.chunks)"></div>
+        </div>
+        <span class="bar-value">{{ d.chunks }}</span>
+      </div>
+      }
+    </div>
+    } @else {
+    <p class="muted">No documents indexed yet.</p>
+    }
+  </div>
+
+  <div class="card panel">
+    <h3>Recent questions</h3>
+    @if (usage()?.recent_queries?.length) {
+    <ul class="q-list">
+      @for (q of usage()!.recent_queries; track $index) {
+      <li>
+        <span class="q-text">{{ q.question }}</span>
+        <span class="badge badge-brand">{{ (q.confidence * 100).toFixed(0) }}%</span>
+      </li>
+      }
+    </ul>
+    } @else {
+    <p class="muted">No questions asked yet.</p>
+    }
+  </div>
+</div>
+} @else {
+<div class="card empty-state"><p>Analytics unavailable.</p></div>
+}
