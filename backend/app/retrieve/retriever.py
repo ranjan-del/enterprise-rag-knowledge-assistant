@@ -32,6 +32,7 @@ class Retriever:
         top_k: int = 5,
         collection_id: int | None = None,
         document_id: int | None = None,
+        format: str | None = None,
     ) -> list[dict]:
         """Return the ``top_k`` chunks most similar to ``query``.
 
@@ -45,4 +46,5 @@ class Retriever:
             top_k=top_k,
             collection_id=collection_id,
             document_id=document_id,
+            format=format,
         )

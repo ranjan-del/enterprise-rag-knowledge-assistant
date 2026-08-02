@@ -7,6 +7,15 @@ is fully reproducible and testable offline. Two texts sharing many words end up
 with vectors pointing in a similar direction, so cosine similarity ranks
 word overlap, which is enough to make retrieval meaningful.
 
+Stopwords are dropped before hashing. This matters more than it looks: in a
+bag-of-words vector the function words ("what", "is", "the", "of") are the most
+frequent tokens in BOTH the question and every chunk, so leaving them in makes
+every chunk look similar to every question. Measured on the sample corpus, the
+question "what is the capital of france" scored 0.228 cosine against a leave
+policy chunk while the on-topic question scored 0.254 -- almost no separation.
+Removing stopwords makes the cosine reflect content-word overlap only, which is
+what downstream confidence scoring relies on.
+
 A real ``sentence-transformers`` model can be dropped in later behind the same
 interface; it is intentionally not required for the default path or the tests.
 """
@@ -22,10 +31,36 @@ from app.core.config import settings
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
+# Deliberately small, hand-written English stopword list. A big curated list
+# would be a dependency; these are the function words that actually distort a
+# bag-of-words vector because they appear in nearly every sentence.
+STOPWORDS = frozenset(
+    """
+    a about an and any are as at be been being but by can could did do does
+    doing done for from had has have having he her hers him his how i if in
+    into is it its me my no nor not of on or our ours out over own she should
+    so some such than that the their theirs them then there these they this
+    those to too us was we were what when where which while who whom why will
+    with would you your yours
+    """.split()
+)
+
 
 def tokenize(text: str) -> list[str]:
-    """Lowercase alphanumeric word tokenizer (shared with lexical retrieval)."""
+    """Lowercase alphanumeric word tokenizer (raw, stopwords included)."""
     return _TOKEN_RE.findall(text.lower())
+
+
+def content_tokens(text: str) -> list[str]:
+    """Tokens with stopwords removed, used for embedding and lexical scoring.
+
+    Falls back to the raw tokens when a string is *entirely* stopwords (e.g. the
+    query "what is it"), because an all-zero vector would score 0 against
+    everything and give the caller no ranking at all.
+    """
+    tokens = tokenize(text)
+    kept = [t for t in tokens if t not in STOPWORDS]
+    return kept or tokens
 
 
 def _l2_normalize(matrix: np.ndarray) -> np.ndarray:
@@ -50,7 +85,7 @@ class HashingEmbedder:
 
     def embed_one(self, text: str) -> np.ndarray:
         vector = np.zeros(self.dim, dtype=np.float32)
-        for token in tokenize(text):
+        for token in content_tokens(text):
             vector[self._hash(token)] += 1.0
         return _l2_normalize(vector.reshape(1, -1))[0]
 

@@ -26,6 +26,8 @@ export class SearchComponent implements OnInit {
   error = signal<string | null>(null);
   asked = signal(false);
 
+  // Terms the backend told us to highlight, captured from the last answer and
+  // consumed by highlight() when rendering snippets.
   private highlightTerms: string[] = [];
 
   constructor(

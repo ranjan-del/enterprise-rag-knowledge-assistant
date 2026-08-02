@@ -23,7 +23,7 @@ from __future__ import annotations
 import numpy as np
 
 from app.core.config import settings
-from app.ingest.embed import get_embedder, tokenize
+from app.ingest.embed import content_tokens, get_embedder
 from app.store.vector_store import get_store
 
 
@@ -39,10 +39,15 @@ def _minmax(values: np.ndarray) -> np.ndarray:
 
 
 def _lexical_score(query_tokens: set[str], text: str) -> float:
-    """Overlap coefficient: fraction of query tokens present in the chunk."""
+    """Overlap coefficient: fraction of query CONTENT tokens present in a chunk.
+
+    Stopwords are excluded on both sides. Including them would push this toward
+    1.0 for every chunk in the corpus, since "the"/"of"/"is" appear everywhere,
+    which is exactly the failure mode hybrid search is supposed to avoid.
+    """
     if not query_tokens:
         return 0.0
-    doc_tokens = set(tokenize(text))
+    doc_tokens = set(content_tokens(text))
     if not doc_tokens:
         return 0.0
     return len(query_tokens & doc_tokens) / len(query_tokens)
@@ -62,6 +67,7 @@ class HybridRetriever:
         top_k: int = 5,
         collection_id: int | None = None,
         document_id: int | None = None,
+        format: str | None = None,
     ) -> list[dict]:
         """Return the ``top_k`` chunks ranked by the fused score."""
         meta = self.store.all_meta()
@@ -72,17 +78,19 @@ class HybridRetriever:
         query_vector = self.embedder.embed_one(query)
         semantic = self.store.score_all(query_vector)
 
-        # Restrict to the candidates that pass the metadata filters.
-        candidates = [
-            i
-            for i in range(len(meta))
-            if (collection_id is None or meta[i].get("collection_id") == collection_id)
-            and (document_id is None or meta[i].get("document_id") == document_id)
-        ]
+        # Restrict to the candidates that pass the metadata filters. The store
+        # owns filter semantics so semantic and hybrid modes cannot disagree.
+        candidates = self.store.candidate_rows(
+            {
+                "collection_id": collection_id,
+                "document_id": document_id,
+                "format": format,
+            }
+        )
         if not candidates:
             return []
 
-        query_tokens = set(tokenize(query))
+        query_tokens = set(content_tokens(query))
         semantic_c = np.array([semantic[i] for i in candidates], dtype=np.float32)
         lexical_c = np.array(
             [_lexical_score(query_tokens, meta[i]["text"]) for i in candidates],
@@ -91,14 +99,22 @@ class HybridRetriever:
 
         fused = self.alpha * _minmax(semantic_c) + (1 - self.alpha) * _minmax(lexical_c)
 
-        order = np.argsort(-fused)[:top_k]
+        # Stable ordering: sort on (-fused, chunk_id) so equal scores resolve the
+        # same way on every process, which matters after an index rebuild.
+        order = sorted(
+            range(len(candidates)),
+            key=lambda r: (-float(fused[r]), meta[candidates[r]].get("chunk_id") or 0),
+        )[:top_k]
         results: list[dict] = []
         for rank in order:
-            idx = candidates[int(rank)]
+            idx = candidates[rank]
             record = dict(meta[idx])
-            # Keep the raw cosine as ``score`` (used for confidence + display) and
-            # expose the fused ranking score separately for transparency.
+            # ``score`` stays the raw cosine so it means the same thing in both
+            # modes and can be compared across queries. The fused value is a
+            # min-max rank within THIS result set (its top is always ~1.0), so it
+            # is exposed separately rather than passed off as a similarity.
             record["score"] = float(semantic[idx])
-            record["hybrid_score"] = float(fused[int(rank)])
+            record["lexical_score"] = float(lexical_c[rank])
+            record["hybrid_score"] = float(fused[rank])
             results.append(record)
         return results

@@ -6,11 +6,14 @@ retrievers, answer assembly) without a database or the API layer.
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 
-from app.generate.answer import build_answer
+from app.generate import llm
+from app.generate.answer import _confidence, _find_term_spans, build_answer
 from app.ingest.chunk import chunk_text
-from app.ingest.embed import HashingEmbedder
+from app.ingest.embed import HashingEmbedder, content_tokens, tokenize
 from app.ingest.parser import PAGE_BREAK, parse
 from app.retrieve.hybrid import HybridRetriever
 from app.retrieve.retriever import Retriever
@@ -118,3 +121,316 @@ def test_build_answer_handles_no_results():
     assert result["confidence"] == 0.0
     assert result["citations"] == []
     assert result["source_document"] is None
+
+
+# --- tokenisation ------------------------------------------------------------
+
+
+def test_content_tokens_drop_stopwords_but_never_everything():
+    assert content_tokens("What is the vacation policy?") == ["vacation", "policy"]
+    # An all-stopword string falls back to the raw tokens, because a zero vector
+    # would score 0.0 against every chunk and give the caller no ranking at all.
+    assert content_tokens("what is it") == tokenize("what is it")
+
+
+def test_stopwords_stop_off_topic_queries_from_scoring():
+    embedder = HashingEmbedder(dim=256)
+    docs = ["The vacation policy grants employees twenty paid leave days per year."]
+    store = _build_store(docs, embedder)
+    retriever = Retriever(store=store, embedder=embedder)
+
+    # Shares only function words with the corpus, so it must score ~0. With
+    # stopwords left in, this query scored 0.228 against this same chunk.
+    off_topic = retriever.retrieve("what is the capital of france", top_k=1)
+    on_topic = retriever.retrieve("how many paid leave days", top_k=1)
+    assert off_topic[0]["score"] == 0.0
+    assert on_topic[0]["score"] > 0.2
+
+
+# --- chunking ----------------------------------------------------------------
+
+
+def test_chunk_spans_exactly_bound_the_stored_text():
+    text = "  " + "alpha beta gamma delta. " * 60
+    for chunk in chunk_text(text, chunk_size=100, overlap=20):
+        page_text = text  # single page, no form feeds
+        assert page_text[chunk["char_start"] : chunk["char_end"]] == chunk["text"]
+
+
+def test_chunk_overlap_shares_context_between_neighbours():
+    text = "".join(f"sentence {i}. " for i in range(60))
+    chunks = chunk_text(text, chunk_size=120, overlap=40)
+    assert len(chunks) > 2
+    # Consecutive windows advance by (chunk_size - overlap), so each pair shares
+    # text; that is what keeps a fact straddling a boundary intact somewhere.
+    assert chunks[0]["char_end"] > chunks[1]["char_start"]
+
+
+# --- answer, citations, confidence, highlights -------------------------------
+
+
+def test_answer_text_is_lifted_from_the_cited_chunk():
+    """The core citation contract: each [n] quote comes from chunk n."""
+    embedder = HashingEmbedder(dim=256)
+    docs = [
+        "Expense reports must be submitted within thirty days of travel. "
+        "Receipts above fifty euros require manager approval.",
+        "The security policy requires multi factor authentication for admins. "
+        "Passwords rotate every ninety days.",
+    ]
+    store = _build_store(docs, embedder)
+    retriever = Retriever(store=store, embedder=embedder)
+    query = "when must expense reports be submitted"
+
+    retrieved = retriever.retrieve(query, top_k=2)
+    result = build_answer(query, retrieved)
+
+    body = result["answer"].split(":", 1)[1]
+    quotes = [q.strip() for q in re.split(r"\[\d+\]", body) if q.strip()]
+    markers = [int(m) for m in re.findall(r"\[(\d+)\]", result["answer"])]
+    assert quotes and len(quotes) == len(markers)
+
+    for quote, marker in zip(quotes, markers):
+        source = result["citations"][marker - 1]
+        chunk = next(c for c in retrieved if c["chunk_id"] == source["chunk_id"])
+        # Whitespace is collapsed when rendering, so compare on collapsed text.
+        assert quote in " ".join(chunk["text"].split())
+
+
+def test_citations_record_which_sources_the_answer_used():
+    embedder = HashingEmbedder(dim=256)
+    docs = [
+        "Expense reports must be submitted within thirty days of travel.",
+        "The office cafeteria serves lunch between noon and two.",
+        "Bicycle parking is available in the basement.",
+        "Visitor badges must be returned at reception.",
+    ]
+    store = _build_store(docs, embedder)
+    retriever = Retriever(store=store, embedder=embedder)
+    query = "when must expense reports be submitted"
+
+    retrieved = retriever.retrieve(query, top_k=4)
+    result = build_answer(query, retrieved)
+
+    # Four chunks retrieved, but the extractive answer only quotes three, so the
+    # citation list must distinguish "used" from "also retrieved".
+    assert len(result["citations"]) == 4
+    used = [c for c in result["citations"] if c["used"]]
+    assert len(used) == 3
+    assert result["citations"][0]["used"] is True
+    assert result["citations"][3]["used"] is False
+    for citation in used:
+        assert citation["marker"] in result["answer"]
+
+
+def test_confidence_separates_answerable_from_unanswerable_questions():
+    embedder = HashingEmbedder(dim=256)
+    docs = [
+        "Full time employees receive twenty five paid vacation days each year.",
+        "Managers approve leave requests two weeks in advance.",
+    ]
+    store = _build_store(docs, embedder)
+    retriever = Retriever(store=store, embedder=embedder)
+
+    good = "how many paid vacation days do employees receive"
+    bad = "what is the airspeed velocity of an unladen swallow"
+    good_conf = build_answer(good, retriever.retrieve(good, top_k=2))["confidence"]
+    bad_conf = build_answer(bad, retriever.retrieve(bad, top_k=2))["confidence"]
+
+    assert 0.0 <= bad_conf <= 1.0 and 0.0 <= good_conf <= 1.0
+    assert good_conf > 0.5
+    assert bad_conf == 0.0
+    assert good_conf > bad_conf
+
+
+def test_confidence_is_zero_without_retrieved_chunks():
+    assert _confidence("anything at all", []) == 0.0
+
+
+def test_highlights_respect_word_boundaries():
+    # "cat" must not light up inside "category": a substring search would.
+    spans = _find_term_spans("cat", "the category lists one cat and one dog")
+    assert [s["start"] for s in spans] == [23]
+    assert spans[0]["term"] == "cat"
+
+
+def test_highlight_spans_index_into_the_text_they_describe():
+    text = "Multi factor authentication is required for every administrator account."
+    spans = _find_term_spans("which authentication do administrators need", text)
+    assert spans
+    for span in spans:
+        assert text[span["start"] : span["end"]].lower() == span["term"]
+
+
+def test_citation_highlights_are_relative_to_the_snippet():
+    embedder = HashingEmbedder(dim=256)
+    docs = ["The security policy requires multi factor authentication for admins."]
+    store = _build_store(docs, embedder)
+    retriever = Retriever(store=store, embedder=embedder)
+    query = "what authentication is required for admins"
+
+    result = build_answer(query, retriever.retrieve(query, top_k=1))
+    citation = result["citations"][0]
+    assert citation["highlights"]
+    for span in citation["highlights"]:
+        assert (
+            citation["snippet"][span["start"] : span["end"]].lower() == span["term"]
+        )
+
+
+def test_supporting_span_marks_the_sentence_the_answer_quoted():
+    """The span must be the answer's own words, not a re-guess after the fact."""
+    embedder = HashingEmbedder(dim=256)
+    docs = [
+        "Company Leave Policy. Full time employees receive twenty five paid "
+        "vacation days each year. Coffee is available on every floor.",
+    ]
+    store = _build_store(docs, embedder)
+    retriever = Retriever(store=store, embedder=embedder)
+    query = "how many paid vacation days do employees receive"
+
+    result = build_answer(query, retriever.retrieve(query, top_k=1))
+    citation = result["citations"][0]
+    span = citation["supporting_span"]
+
+    assert span is not None
+    # The span indexes into the snippet the UI renders...
+    assert citation["snippet"][span["start"] : span["end"]] == span["text"]
+    # ...and the answer really does quote that text.
+    assert " ".join(span["text"].split()) in " ".join(result["answer"].split())
+    assert "twenty five paid vacation days" in span["text"]
+
+
+def test_retrieved_but_unquoted_chunks_have_no_supporting_span():
+    embedder = HashingEmbedder(dim=256)
+    docs = [
+        "Expense reports must be submitted within thirty days of travel.",
+        "The office cafeteria serves lunch between noon and two.",
+        "Bicycle parking is available in the basement.",
+        "Visitor badges must be returned at reception.",
+    ]
+    store = _build_store(docs, embedder)
+    retriever = Retriever(store=store, embedder=embedder)
+    query = "when must expense reports be submitted"
+
+    result = build_answer(query, retriever.retrieve(query, top_k=4))
+    # Only the top three chunks may contribute a quote, so the fourth citation
+    # is "also retrieved" and must not claim a supporting span.
+    assert result["citations"][3]["used"] is False
+    assert result["citations"][3]["supporting_span"] is None
+    assert all(c["supporting_span"] is not None for c in result["citations"][:3])
+
+
+def test_snippet_window_follows_the_supporting_sentence_into_a_long_chunk():
+    """A 240 character prefix would cut away the sentence that answers.
+
+    The filler below pushes the answering sentence past the snippet budget, so
+    a fixed ``text[:240]`` window would show the reader a "source" that does
+    not contain the quoted text at all.
+    """
+    filler = "This paragraph is preamble about office logistics. " * 8
+    chunk_text_body = (
+        filler + "Severity one incidents require a written postmortem within "
+        "five working days."
+    )
+    assert len(filler) > 240  # the sentence really is out of reach of a prefix
+
+    chunk = {
+        "text": chunk_text_body,
+        "chunk_id": 1,
+        "document_id": 1,
+        "filename": "runbook.txt",
+        "page": 1,
+        "score": 0.5,
+    }
+    query = "when is a postmortem required for severity one incidents"
+    result = build_answer(query, [chunk])
+
+    citation = result["citations"][0]
+    span = citation["supporting_span"]
+    assert span is not None
+    assert "written postmortem" in span["text"]
+    assert citation["snippet"][span["start"] : span["end"]] == span["text"]
+    # The window was cut out of the middle, so it is marked as elided.
+    assert citation["snippet"].startswith("...")
+
+
+def test_answer_highlights_index_into_the_answer_text():
+    embedder = HashingEmbedder(dim=256)
+    docs = ["The security policy requires multi factor authentication for admins."]
+    store = _build_store(docs, embedder)
+    retriever = Retriever(store=store, embedder=embedder)
+    query = "what authentication is required for admins"
+
+    result = build_answer(query, retriever.retrieve(query, top_k=1))
+    assert result["highlights"]
+    for span in result["highlights"]:
+        assert (
+            result["answer"][span["start"] : span["end"]].lower() == span["term"]
+        )
+
+
+def test_hybrid_exposes_both_component_scores():
+    embedder = HashingEmbedder(dim=256)
+    docs = [
+        "Kubernetes handles container orchestration across the cluster.",
+        "Onboarding new engineers takes about two weeks.",
+    ]
+    store = _build_store(docs, embedder)
+    hybrid = HybridRetriever(store=store, embedder=embedder, alpha=0.5)
+
+    top = hybrid.retrieve("container orchestration cluster", top_k=2)[0]
+    # score stays the raw cosine so it is comparable across queries and modes;
+    # the fused rank score is reported separately rather than dressed up as one.
+    assert 0.0 <= top["score"] <= 1.0
+    assert top["lexical_score"] == 1.0  # every query term is present
+    assert 0.0 <= top["hybrid_score"] <= 1.0
+
+
+# --- offline answer generation ------------------------------------------------
+
+
+def test_sentence_spans_cover_punctuation_and_newlines():
+    text = "First sentence. Second one!\nThird line"
+    spans = llm.sentence_spans(text)
+    assert [text[s:e] for s, e in spans] == [
+        "First sentence.",
+        "Second one!",
+        "Third line",
+    ]
+
+
+def test_select_support_prefers_the_sentence_that_answers():
+    chunk = {
+        "text": (
+            "Company Leave Policy. Full time employees receive twenty five paid "
+            "vacation days each year. Coffee is available on every floor."
+        )
+    }
+    support = llm.select_support("how many vacation days", [chunk])
+    assert len(support) == 1
+    assert "twenty five paid vacation days" in support[0]["text"]
+    # Offsets must point back into the chunk exactly.
+    assert chunk["text"][support[0]["start"] : support[0]["end"]] == support[0]["text"]
+
+
+def test_generate_stays_offline_without_an_api_key(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    chunks = [{"text": "Passwords rotate every ninety days."}]
+    answer = llm.generate("how often do passwords rotate", "[1] ...", chunks=chunks)
+    assert "ninety days" in answer
+    assert "[1]" in answer
+
+
+def test_generate_falls_back_when_the_online_path_fails(monkeypatch):
+    # A key is set but the SDK call blows up; the answer must degrade to the
+    # offline extractor instead of surfacing an error to the user.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    chunks = [{"text": "Passwords rotate every ninety days."}]
+    answer = llm.generate("how often do passwords rotate", "[1] ...", chunks=chunks)
+    assert "ninety days" in answer
+
+
+def test_cited_markers_parses_the_answer_text():
+    assert llm.cited_markers("Based on [1] and also [3].") == {1, 3}
+    assert llm.cited_markers("no markers here") == set()

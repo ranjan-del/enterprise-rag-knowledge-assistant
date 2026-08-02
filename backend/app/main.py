@@ -12,6 +12,7 @@ API key or external service is required to run or test the app.
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -32,6 +33,7 @@ from app.models.user import Role, User
 from app.store.vector_store import get_store
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 def _seed_admin() -> None:
@@ -54,11 +56,18 @@ def _seed_admin() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup/shutdown: prepare the database and warm the vector index."""
+    """Startup/shutdown: prepare the database and warm the vector index.
+
+    The rebuild is what makes a restart safe. Vectors live in process memory, so
+    without reloading them from ``chunks.embedding`` here, every document
+    uploaded before the restart would still be listed in the UI but would be
+    invisible to search.
+    """
     init_db()
     _seed_admin()
     with SessionLocal() as db:
-        get_store().rebuild_from_db(db)
+        restored = get_store().rebuild_from_db(db)
+    logger.info("vector index warm: %d chunk vectors restored from the database", restored)
     yield
 
 
@@ -88,5 +97,14 @@ app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
 
 @app.get("/health", tags=["system"])
 def health() -> dict:
-    """Liveness/readiness probe used by Docker and the hosting platform."""
-    return {"status": "ok", "service": settings.app_name, "version": settings.version}
+    """Liveness/readiness probe used by Docker and the hosting platform.
+
+    Reports the live vector-index size too, which is the cheapest way to confirm
+    from outside the process that the startup rebuild actually ran.
+    """
+    return {
+        "status": "ok",
+        "service": settings.app_name,
+        "version": settings.version,
+        "index": get_store().stats(),
+    }

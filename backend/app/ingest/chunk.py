@@ -39,6 +39,11 @@ def chunk_text(
                 "char_start": int,    # offset within its page's text
                 "char_end": int,
             }
+
+        The span is exact: ``page_text[char_start:char_end] == text``. That
+        matters because the answer layer reports highlight offsets relative to a
+        chunk, and a UI that wants to jump back into the original page text can
+        only do so if the recorded offsets really bound the stored text.
     """
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
@@ -55,15 +60,20 @@ def chunk_text(
         length = len(page_text)
         while start < length:
             end = min(start + chunk_size, length)
-            piece = page_text[start:end].strip()
+            window = page_text[start:end]
+            piece = window.strip()
             if piece:
+                # Re-derive the span so it bounds the STRIPPED text rather than
+                # the raw window; otherwise leading/trailing whitespace would
+                # push every recorded offset out by a few characters.
+                lead = len(window) - len(window.lstrip())
                 chunks.append(
                     {
                         "text": piece,
                         "page": page_number,
                         "chunk_index": chunk_index,
-                        "char_start": start,
-                        "char_end": end,
+                        "char_start": start + lead,
+                        "char_end": start + lead + len(piece),
                     }
                 )
                 chunk_index += 1

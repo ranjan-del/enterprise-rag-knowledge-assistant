@@ -101,6 +101,10 @@ class QueryLog(Base):
     )
     question: Mapped[str] = mapped_column(String, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # Document ids the answer actually cited, stored as a JSON list. Without
+    # this, "most referenced documents" on the analytics page can only be
+    # approximated by chunk count, which measures document SIZE, not usage.
+    cited_document_ids: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False
     )

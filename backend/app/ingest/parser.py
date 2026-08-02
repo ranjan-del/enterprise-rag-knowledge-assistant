@@ -44,19 +44,32 @@ def parse_docx(data: bytes) -> str:
 
 
 def parse_pptx(data: bytes) -> str:
-    """Extract text from a PowerPoint deck, one slide per ``PAGE_BREAK``."""
+    """Extract text from a PowerPoint deck, one slide per ``PAGE_BREAK``.
+
+    Walks both text frames and tables. Joining a paragraph's runs can yield an
+    empty string when the text lives directly on the paragraph rather than in
+    runs, so ``paragraph.text`` is used as the fallback; without it, slides
+    authored by some tools index as blank.
+    """
     from pptx import Presentation
 
     presentation = Presentation(io.BytesIO(data))
     slides = []
     for slide in presentation.slides:
-        lines = []
+        lines: list[str] = []
         for shape in slide.shapes:
             if shape.has_text_frame:
                 for paragraph in shape.text_frame.paragraphs:
                     text = "".join(run.text for run in paragraph.runs).strip()
+                    if not text:
+                        text = paragraph.text.strip()
                     if text:
                         lines.append(text)
+            if getattr(shape, "has_table", False):
+                for row in shape.table.rows:
+                    cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                    if cells:
+                        lines.append(" | ".join(cells))
         slides.append("\n".join(lines))
     return PAGE_BREAK.join(slides)
 

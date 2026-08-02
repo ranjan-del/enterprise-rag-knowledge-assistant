@@ -9,11 +9,13 @@ MEMORY.md checklist:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.deps import require_role
+from app.ingest.parser import SUPPORTED_FORMATS
+from app.ingest.pipeline import reingest_document
 from app.models.document import Document
 from app.models.user import Role, User
 from app.schemas.document import DocumentOut
@@ -62,21 +64,73 @@ def set_permissions(
 
 
 @router.post("/documents/{document_id}/versions", response_model=DocumentOut)
-def create_version(
+async def create_version(
     document_id: int,
+    file: UploadFile | None = File(default=None),
     db: Session = Depends(get_db),
     _: User = Depends(require_role("admin")),
 ) -> Document:
-    """Increment a document's version counter (admin only)."""
+    """Publish a new version of a document (admin only).
+
+    With a ``file``, the document's content is REPLACED: the old chunks are
+    dropped from the database and the vector index, the new file is re-ingested
+    under the same document id, and the version counter advances. Keeping the id
+    means collection membership and any stored citation still resolve.
+
+    Without a file, this only advances the counter, which is the "mark a
+    reviewed revision" case where the content has not changed.
+    """
     document = db.get(Document, document_id)
     if document is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Document not found."
         )
-    document.version += 1
-    db.commit()
-    db.refresh(document)
-    return document
+
+    if file is None:
+        document.version += 1
+        db.commit()
+        db.refresh(document)
+        return document
+
+    filename = file.filename or document.filename
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in SUPPORTED_FORMATS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unsupported format '{ext or filename}'. "
+                f"Supported: {', '.join(SUPPORTED_FORMATS)}."
+            ),
+        )
+    data = await file.read()
+    if not data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty."
+        )
+
+    return reingest_document(
+        db,
+        document,
+        filename=filename,
+        data=data,
+        content_type=file.content_type or "",
+    )
+
+
+@router.post("/index/rebuild", status_code=status.HTTP_200_OK)
+def rebuild_index(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+) -> dict:
+    """Rebuild the in-memory vector index from the persisted chunk rows.
+
+    The same call the application makes on startup, exposed so an operator can
+    repair drift without a restart. ``/api/analytics/overview`` reports
+    ``chunks`` (from SQL) next to ``indexed_vectors`` (from memory); when those
+    two disagree, this is the fix.
+    """
+    restored = get_store().rebuild_from_db(db)
+    return {"detail": "Vector index rebuilt.", "vectors": restored}
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_200_OK)

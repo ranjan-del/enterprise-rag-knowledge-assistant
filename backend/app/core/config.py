@@ -27,9 +27,6 @@ class Settings(BaseSettings):
     # override with a PostgreSQL URL via the DATABASE_URL env var.
     database_url: str = "sqlite:///./rag.db"
 
-    # Where uploaded files are stored on disk.
-    upload_dir: str = "./data/uploads"
-
     # Embeddings (offline hashing embedder). Larger dim = finer buckets.
     embedding_dim: int = 512
 

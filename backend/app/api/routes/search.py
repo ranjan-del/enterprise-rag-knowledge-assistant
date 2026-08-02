@@ -39,6 +39,7 @@ def _retrieve(payload: SearchRequest) -> list[dict]:
         top_k=payload.top_k,
         collection_id=payload.collection_id,
         document_id=payload.document_id,
+        format=payload.format,
     )
 
 
@@ -52,12 +53,22 @@ def query(
     retrieved = _retrieve(payload)
     result = build_answer(payload.query, retrieved)
 
+    # Record only the documents the answer actually cited, so the analytics
+    # "most referenced" panel reflects usage rather than corpus size.
+    cited = sorted(
+        {
+            c["document_id"]
+            for c in result["citations"]
+            if c["used"] and c["document_id"] is not None
+        }
+    )
     db.add(
         QueryLog(
             user_id=current_user.id,
             collection_id=payload.collection_id,
             question=payload.query,
             confidence=result["confidence"],
+            cited_document_ids=cited,
         )
     )
     db.commit()

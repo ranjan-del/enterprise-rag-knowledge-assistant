@@ -14,6 +14,7 @@ from app.db.session import get_db
 from app.deps import get_current_user
 from app.models.document import Chunk, Collection, Document, QueryLog
 from app.models.user import User
+from app.store.vector_store import get_store
 
 router = APIRouter()
 
@@ -33,6 +34,9 @@ def overview(
         "ready_documents": db.query(Document)
         .filter(Document.status == "ready")
         .count(),
+        # Live index size. Comparing this against ``chunks`` is the quickest way
+        # to spot the vector index drifting out of sync with the database.
+        "indexed_vectors": len(get_store()),
     }
 
 
@@ -41,7 +45,7 @@ def usage(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """Recent questions and the most-referenced documents."""
+    """Recent questions, most-indexed documents, and most-cited documents."""
     recent = (
         db.query(QueryLog).order_by(QueryLog.created_at.desc()).limit(10).all()
     )
@@ -67,4 +71,28 @@ def usage(
         for doc_id, filename, chunks in top_docs
     ]
 
-    return {"recent_queries": recent_queries, "top_documents": top_documents}
+    # Citation counts are tallied in Python rather than SQL: the cited ids live
+    # in a JSON column and JSON aggregation is not portable between SQLite and
+    # PostgreSQL, both of which this app has to run on.
+    counts: dict[int, int] = {}
+    for (cited,) in db.query(QueryLog.cited_document_ids).all():
+        for document_id in cited or []:
+            counts[document_id] = counts.get(document_id, 0) + 1
+
+    names = dict(db.query(Document.id, Document.filename).all())
+    most_cited = [
+        {
+            "document_id": document_id,
+            "filename": names.get(document_id, "(deleted)"),
+            "citations": count,
+        }
+        for document_id, count in sorted(
+            counts.items(), key=lambda kv: (-kv[1], kv[0])
+        )[:5]
+    ]
+
+    return {
+        "recent_queries": recent_queries,
+        "top_documents": top_documents,
+        "most_cited_documents": most_cited,
+    }

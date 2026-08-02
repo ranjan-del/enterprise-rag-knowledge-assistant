@@ -30,14 +30,19 @@ router = APIRouter()
 @router.get("", response_model=DocumentList)
 def list_documents(
     collection_id: int | None = None,
+    format: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DocumentList:
-    """List documents, optionally filtered to a single collection."""
+    """List documents, optionally filtered by collection and/or file format."""
     query = db.query(Document)
     if collection_id is not None:
         query = query.filter(Document.collection_id == collection_id)
-    items = query.order_by(Document.created_at.desc()).all()
+    if format is not None:
+        query = query.filter(Document.format == format.lower())
+    # Order by id as the tie-breaker: several uploads in the same request batch
+    # can share a created_at timestamp, which would make paging order unstable.
+    items = query.order_by(Document.created_at.desc(), Document.id.desc()).all()
     return DocumentList(items=items, total=len(items))
 
 
