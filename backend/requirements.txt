@@ -15,6 +15,7 @@ python-pptx
 
 # Database
 sqlalchemy
+alembic                  # schema migrations (see alembic/ and `alembic upgrade head`)
 psycopg2-binary           # PostgreSQL driver (used in Docker; SQLite needs nothing)
 
 # Auth

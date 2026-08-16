@@ -28,3 +28,7 @@ npm-debug.log*
 # Editors
 .idea/
 .vscode/
+
+# Frontend test artifacts
+coverage/
+out-tsc/

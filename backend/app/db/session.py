@@ -36,7 +36,18 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 
 
 def init_db() -> None:
-    """Create all tables. Import models first so they register on the metadata."""
+    """Create any missing tables, unless Alembic is in charge.
+
+    Alembic owns the schema (`alembic upgrade head`). create_all remains as a
+    local convenience so the app and the tests can run against a throwaway
+    SQLite file with no migration step, and settings forces it off in
+    production so the two can never both be in charge: create_all never alters
+    an existing table, so a deployment relying on it would keep booting happily
+    while its schema drifted away from the models.
+    """
+    if not get_settings().auto_create_tables:
+        return
+
     # Imported for their side effect of registering tables on Base.metadata.
     from app.models import document, user  # noqa: F401
 

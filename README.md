@@ -1,5 +1,15 @@
 # Enterprise RAG Knowledge Assistant
 
+| | |
+|---|---|
+| **What it is** | An internal knowledge system: upload documents, ask questions, get answers whose every clause is a verbatim quote from a numbered source |
+| **Stack** | FastAPI · SQLAlchemy · Alembic · NumPy · PostgreSQL (SQLite locally) · Angular |
+| **Run it** | `docker compose up --build`, or see [Installation](#installation) |
+| **Tests** | 107 backend (pytest) · 20 frontend (Karma/Jasmine) · migrations verified against PostgreSQL in CI |
+| **Read first** | [Architecture](#architecture), then [Design decisions](#design-decisions--trade-offs) |
+
+**The three things worth looking at:** every RAG layer is written out rather than imported, so the embedder, the vector store and the retrievers are all readable code; the answer is extractive by construction, which makes the citation contract testable (a test asserts each quote is a literal substring of the chunk its marker points at); and citations have relevance floors, so a chunk that shares no vocabulary with the question is not quoted merely for ranking third.
+
 An internal company knowledge system built as a full Retrieval Augmented Generation pipeline: upload
 documents in five formats, have them parsed, chunked, embedded and indexed, then ask questions in plain
 language and get back an answer whose every clause is a verbatim quote from a numbered source. It exists
@@ -854,15 +864,17 @@ python -m pytest
 python -m pytest --tb=no -rN
 ```
 
+Five of the pipeline tests cover the citation relevance floors specifically, including the one that
+matters most: a question nothing in the corpus answers must produce no citations at all rather than a
+confident quote from whatever ranked third.
+
 Observed result on this machine (Python 3.14.6, macOS):
 
 ```
-........................................................................ [ 84%]
-.............                                                            [100%]
-85 passed, 1 warning in 32.54s
+107 passed, 1 warning in 31.55s
 ```
 
-**85 tests pass.** The single warning is a Starlette deprecation notice about `httpx` inside `TestClient`, not
+**107 tests pass.** The single warning is a Starlette deprecation notice about `httpx` inside `TestClient`, not
 a test failure. Per file:
 
 | File | Tests | Covers |
@@ -870,6 +882,8 @@ a test failure. Per file:
 | `tests/test_pipeline.py` | 28 | Chunking spans and overlap, embedder determinism and normalisation, stopword behaviour, semantic and hybrid ranking, answer text being lifted verbatim from the cited chunk, confidence separating answerable from unanswerable questions, highlight word boundaries, supporting spans, and the offline generation fallback. |
 | `tests/test_api.py` | 27 | HTTP flows: auth, upload-to-answer, collection scoping, metadata filters, versioning, analytics, permissions, ownership checks, and the assertion that every offset in a query response indexes into a string that response carries. |
 | `tests/test_index.py` | 15 | Vector store internals: upsert replacing rather than duplicating, batch row-lookup correctness, ANDed metadata filters, tie-break stability, and `rebuild_from_db` being idempotent, excluding deleted documents, and repairing wrong-width embeddings. |
+| `tests/test_production_safety.py` | 13 | The rails that only fire when `ENVIRONMENT=production`: a placeholder or short `JWT_SECRET` refuses to boot, the shipped `admin@example.com` / `adminpass123` bootstrap admin is refused, and `create_all` is disabled so Alembic owns the schema. |
+| `tests/test_migrations.py` | 3 | `alembic upgrade head` builds every table, `compare_metadata` finds no drift against the models, and `downgrade base` removes everything again. |
 | `tests/test_parsers.py` | 15 | Every supported format parsed and ingested end to end, PDF page numbers reaching the citation, text-free files being flagged rather than silently empty, and corrupt files failing cleanly. |
 
 The tests do not mock the file formats. `tests/fixtures.py` builds genuine DOCX and PPTX bytes with the same
@@ -882,8 +896,22 @@ before importing any application module, so the cached `Settings` and the SQLAlc
 throwaway SQLite file and the offline answer path is forced. The `client` fixture drops and recreates all
 tables and clears the vector store around every test.
 
-The frontend has no test suite. `npm test` is wired to `ng test` in `package.json`, but no spec files and no
-Karma or Jasmine configuration exist, so that command does not currently run anything.
+Frontend unit tests (Karma + Jasmine, headless Chrome):
+
+```console
+$ cd frontend && npm test
+Chrome Headless: Executed 20 of 20 SUCCESS
+TOTAL: 20 SUCCESS
+```
+
+They cover `AuthService`, the interceptor and both route guards. Two specs are there for behaviour that is
+easy to get subtly wrong: login must be sent as an OAuth2 password *form* rather than JSON, since a JSON body
+comes back as a 422 that looks exactly like a rejected password; and `adminGuard` must send a signed-in
+non-admin to `/dashboard` rather than `/login`, because bouncing a valid session to the login page reads to
+the user as a broken account.
+
+CI runs `pytest`, applies and rolls back the migrations against a real PostgreSQL 16 service, and runs
+`npm test` plus `ng build`.
 
 ## Design decisions & trade-offs
 
@@ -954,17 +982,19 @@ not semantics. A question phrased entirely in synonyms of the source will not re
 `sentence-transformers` behind the existing `get_embedder()` interface is the obvious upgrade and would need
 no changes to the retriever, the store or the API.
 
-**There is no relevance floor on citations.** `select_support` takes a sentence from each of the top three
-retrieved chunks unconditionally, so a chunk with a cosine score of 0.0 can still be quoted and marked
-`used: true`, as the worked example in the Usage section shows. A minimum-score threshold, or dropping chunks
-whose best sentence covers none of the query terms, would fix it.
+**The relevance floors are blunt.** A chunk is now only quoted if the retriever gave it a non-zero score and
+if the sentence chosen from it shares at least one content word with the question, which is what stopped
+cafeteria opening hours being cited as a source about expense policy. Both floors are still term overlap
+rather than meaning, so they inherit the embedder's blindness to synonyms: a genuinely answerable question
+phrased in different words now returns "I don't have enough information" instead of a lucky quote. That is
+the better failure of the two, but it is a failure.
 
 **Confidence is uncalibrated.** The weights are judgement, not measurement. Calibrating them would need a
 labelled question and answer set the repo does not have.
 
-**No frontend tests.** `npm test` maps to `ng test`, but there is no Karma or Jasmine configuration and no
-spec files. Component tests for the highlight rendering and the auth interceptor are the obvious first
-additions. The backend suite is the only automated safety net today.
+**Frontend test coverage stops at the logic.** `AuthService`, the interceptor and both route guards have
+unit tests; the components do not. Highlight rendering and the drag-drop upload are the obvious next
+additions, and there is no end-to-end test driving a browser against a live backend.
 
 **Uploaded files are not retained.** Only the extracted text, chunks and embeddings are stored. There is no
 object storage and no way to download or preview the original document from a citation, which is something any
@@ -973,8 +1003,9 @@ real knowledge base would need.
 **Versioning keeps no history.** `reingest_document` replaces the chunks and increments a counter. Previous
 revisions are gone; you cannot diff versions or roll back.
 
-**Schema changes need Alembic.** `init_db()` calls `create_all`, which creates missing tables but never
-migrates existing ones. Any column change on a live database would have to be done by hand.
+**Migrations exist but have no history yet.** Alembic owns the schema and `auto_create_tables` is forced off
+in production, but there is exactly one baseline revision. The first real column change is where the setup
+gets tested for real, and `tests/test_migrations.py` is what will catch it if the revision is forgotten.
 
 **Permissions are coarse.** Any authenticated user can search the entire corpus and list every document. There
 are no per-collection ACLs and no tenant isolation, so this only makes sense inside a trusted organisation.

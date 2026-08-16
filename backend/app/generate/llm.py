@@ -45,6 +45,30 @@ _MARKER_RE = re.compile(r"\[(\d+)\]")
 # the answer text and the citation layer so both describe the same selection.
 MAX_SUPPORT_CHUNKS = 3
 
+# Relevance floors. Without these, "top 3 chunks" was taken literally: a chunk
+# that shared not one word with the question was still quoted and still marked
+# used=true, because it happened to be third in a list of three. A retriever
+# always returns its best candidates, even when its best is nothing at all, so
+# rank on its own is not evidence of relevance.
+#
+# Two independent floors, because they catch different failures:
+#
+#   MIN_CHUNK_SCORE   - the retriever itself scored this chunk at zero, meaning
+#                       it shares no vocabulary with the query. Quoting it is
+#                       quoting a random passage.
+#   MIN_TERM_OVERLAP  - the chunk scored, but the specific SENTENCE picked out
+#                       of it covers none of the question's content words. The
+#                       chunk may be about the right topic while that sentence
+#                       is not, and it is the sentence that gets quoted.
+#
+# The cost of the floors is that a genuinely answerable question phrased in
+# synonyms now returns "I don't have enough information" instead of a quote
+# that happened to be right. That is the better failure: a citation the user
+# cannot trust is worse than an admission, because it looks identical to one
+# that is correct.
+MIN_CHUNK_SCORE = 1e-9
+MIN_TERM_OVERLAP = 1
+
 
 def sentence_spans(text: str) -> list[tuple[int, int]]:
     """Split ``text`` into sentence ``(start, end)`` offsets.
@@ -104,7 +128,18 @@ def select_support(
         if not text.strip():
             continue
 
-        best: tuple[float, int, int] | None = None
+        # Floor 1: the retriever found no vocabulary in common. Being third in
+        # a list of three is a position, not a reason to quote something.
+        #
+        # A MISSING score is not the same as a zero one. Callers that select
+        # support from chunks they assembled themselves never set the field,
+        # and treating that absence as "scored zero" would reject everything.
+        # Only an explicit zero is evidence, and floor 2 covers the rest.
+        score = chunk.get("score")
+        if score is not None and float(score) <= MIN_CHUNK_SCORE:
+            continue
+
+        best: tuple[float, int, int, int] | None = None
         for start, end in sentence_spans(text):
             sentence = text[start:end]
             tokens = content_tokens(sentence)
@@ -113,11 +148,14 @@ def select_support(
             hits = len(query_tokens & set(tokens))
             score = hits / (len(query_tokens) or 1) - 0.0005 * len(sentence)
             if best is None or score > best[0]:
-                best = (score, start, end)
+                best = (score, start, end, hits)
 
-        if best is None:
+        # Floor 2: the best sentence in this chunk covers none of the
+        # question's content words, so quoting it would attach a citation to a
+        # sentence that does not address what was asked.
+        if best is None or best[3] < MIN_TERM_OVERLAP:
             continue
-        _, start, end = best
+        _, start, end, _ = best
         start, end = _truncate_span(text, start, end)
         support.append(
             {

@@ -212,15 +212,23 @@ def test_citations_record_which_sources_the_answer_used():
     retrieved = retriever.retrieve(query, top_k=4)
     result = build_answer(query, retrieved)
 
-    # Four chunks retrieved, but the extractive answer only quotes three, so the
-    # citation list must distinguish "used" from "also retrieved".
+    # Every retrieved chunk gets a citation entry, but "retrieved" and "used"
+    # are different claims and the payload has to keep them apart.
     assert len(result["citations"]) == 4
+
     used = [c for c in result["citations"] if c["used"]]
-    assert len(used) == 3
+    # Strictly fewer than the three top-ranked chunks are quoted. Only the
+    # chunks whose best sentence actually covers a word of the question earn a
+    # marker; cafeteria hours and bicycle parking are retrieved because the
+    # index returns its best four, not because they answer anything.
+    assert 0 < len(used) < 4
     assert result["citations"][0]["used"] is True
-    assert result["citations"][3]["used"] is False
+
     for citation in used:
         assert citation["marker"] in result["answer"]
+    for citation in result["citations"]:
+        if not citation["used"]:
+            assert citation["marker"] not in result["answer"]
 
 
 def test_confidence_separates_answerable_from_unanswerable_questions():
@@ -314,11 +322,21 @@ def test_retrieved_but_unquoted_chunks_have_no_supporting_span():
     query = "when must expense reports be submitted"
 
     result = build_answer(query, retriever.retrieve(query, top_k=4))
-    # Only the top three chunks may contribute a quote, so the fourth citation
-    # is "also retrieved" and must not claim a supporting span.
+
+    # A chunk is quoted only if it cleared the relevance floors, so the two
+    # flags have to agree in both directions: a span means it was used, and no
+    # span means it was not. Anything else shows the reader a highlighted
+    # "source" for a sentence the answer never took anything from.
+    for citation in result["citations"]:
+        assert (citation["supporting_span"] is not None) == citation["used"]
+
+    # The chunk that genuinely answers the question is quoted.
+    assert result["citations"][0]["used"] is True
+    assert result["citations"][0]["supporting_span"] is not None
+
+    # The fourth chunk is beyond the quoting window entirely.
     assert result["citations"][3]["used"] is False
     assert result["citations"][3]["supporting_span"] is None
-    assert all(c["supporting_span"] is not None for c in result["citations"][:3])
 
 
 def test_snippet_window_follows_the_supporting_sentence_into_a_long_chunk():
@@ -434,3 +452,68 @@ def test_generate_falls_back_when_the_online_path_fails(monkeypatch):
 def test_cited_markers_parses_the_answer_text():
     assert llm.cited_markers("Based on [1] and also [3].") == {1, 3}
     assert llm.cited_markers("no markers here") == set()
+
+
+# --- Relevance floors on citation selection ---------------------------------
+#
+# "Top three chunks" used to be taken literally: rank decided what got quoted,
+# so a chunk sharing no words at all with the question was still quoted and
+# still marked used=true. These tests pin the floors that replaced that.
+
+
+def test_an_irrelevant_chunk_is_not_quoted_just_for_being_in_the_top_three():
+    chunks = [
+        {"text": "Full time employees receive twenty five paid vacation days each year."},
+        {"text": "Bicycle parking is available in the basement."},
+        {"text": "The lobby fountain is cleaned on Tuesdays."},
+    ]
+    support = llm.select_support("how many vacation days do employees receive", chunks)
+
+    assert len(support) == 1
+    assert support[0]["marker"] == 1
+    assert "vacation days" in support[0]["text"]
+
+
+def test_a_chunk_the_retriever_scored_zero_is_never_quoted():
+    """An explicit zero score is the retriever saying it found nothing."""
+    chunks = [
+        {"text": "Full time employees receive twenty five paid vacation days.", "score": 0.7},
+        {"text": "Employees receive a welcome pack on their first day.", "score": 0.0},
+    ]
+    support = llm.select_support("how many vacation days do employees receive", chunks)
+
+    assert [item["marker"] for item in support] == [1]
+
+
+def test_a_missing_score_is_not_treated_as_a_zero_one():
+    """Callers that assemble chunks themselves never set a score field."""
+    chunks = [{"text": "Full time employees receive twenty five paid vacation days."}]
+    assert len(llm.select_support("how many vacation days", chunks)) == 1
+
+
+def test_markers_stay_aligned_with_the_retrieved_list_when_a_chunk_is_skipped():
+    """Marker n must always mean "the nth retrieved chunk".
+
+    Renumbering to close the gap would be the natural-looking thing to do and
+    would silently point every citation after the skipped one at the wrong
+    source document.
+    """
+    chunks = [
+        {"text": "Bicycle parking is available in the basement."},
+        {"text": "Full time employees receive twenty five paid vacation days."},
+    ]
+    support = llm.select_support("how many vacation days", chunks)
+
+    assert [item["marker"] for item in support] == [2]
+
+
+def test_a_question_nothing_answers_produces_no_citations_at_all():
+    chunks = [
+        {"text": "Bicycle parking is available in the basement."},
+        {"text": "The lobby fountain is cleaned on Tuesdays."},
+    ]
+    question = "what is the airspeed velocity of an unladen swallow"
+
+    assert llm.select_support(question, chunks) == []
+    # And the answer says so rather than quoting something unrelated.
+    assert "don't have enough information" in llm.extractive_answer(question, chunks)

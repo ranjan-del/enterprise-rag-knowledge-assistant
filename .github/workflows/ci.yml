@@ -28,8 +28,49 @@ jobs:
           DATABASE_URL: sqlite:///./ci.db
         run: pytest
 
+  migrations:
+    name: Migrations apply cleanly
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rag_assistant
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      # The unit tests exercise the migrations on SQLite. This runs them on the
+      # database production actually uses, which is where a dialect-specific
+      # mistake would surface.
+      - name: alembic upgrade head, then roll all the way back
+        env:
+          JWT_SECRET: ci-test-secret
+          DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/rag_assistant
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+
   frontend:
-    name: Frontend build (ng build)
+    name: Frontend build and tests
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -41,5 +82,9 @@ jobs:
           node-version: "20"
       - name: Install dependencies
         run: npm ci || npm install
+      - name: Unit tests (headless Chrome)
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
+        run: npm test
       - name: Build
         run: npx ng build
